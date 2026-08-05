@@ -14,6 +14,9 @@ test("prerenders the RECIPEINT launch preflight", async () => {
   assert.match(html, /Catch the mismatch before the signature/i);
   assert.match(html, /Generate launch manifest/i);
   assert.match(html, /Verify launch/i);
+  assert.match(html, /Half to FRONG/i);
+  assert.match(html, /No rewards are funded/i);
+  assert.match(html, /Claim after launch/i);
   assert.match(html, /not a smart contract audit/i);
   assert.doesNotMatch(html, /react-loading-skeleton/i);
 });

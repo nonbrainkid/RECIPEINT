@@ -845,16 +845,34 @@ export default function Home() {
             <button
               className={activeTab === "preflight" ? "active" : ""}
               onClick={() => setActiveTab("preflight")}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowRight") return;
+                event.preventDefault();
+                setActiveTab("verify");
+                (event.currentTarget.nextElementSibling as HTMLButtonElement | null)?.focus();
+              }}
               role="tab"
+              id="preflight-tab"
+              aria-controls="preflight-panel"
               aria-selected={activeTab === "preflight"}
+              tabIndex={activeTab === "preflight" ? 0 : -1}
             >
               <span>01</span> Preflight intent
             </button>
             <button
               className={activeTab === "verify" ? "active" : ""}
               onClick={() => setActiveTab("verify")}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft") return;
+                event.preventDefault();
+                setActiveTab("preflight");
+                (event.currentTarget.previousElementSibling as HTMLButtonElement | null)?.focus();
+              }}
               role="tab"
+              id="verify-tab"
+              aria-controls="verify-panel"
               aria-selected={activeTab === "verify"}
+              tabIndex={activeTab === "verify" ? 0 : -1}
             >
               <span>02</span> Verify launch
             </button>
@@ -863,7 +881,7 @@ export default function Home() {
         </div>
 
         {activeTab === "preflight" ? (
-          <div className="workbench-grid">
+          <div className="workbench-grid" role="tabpanel" id="preflight-panel" aria-labelledby="preflight-tab">
             <div className="intent-panel">
               <div className="panel-heading">
                 <div>
@@ -976,7 +994,7 @@ export default function Home() {
             </aside>
           </div>
         ) : (
-          <div className="verify-layout">
+          <div className="verify-layout" role="tabpanel" id="verify-panel" aria-labelledby="verify-tab">
             <div className="verify-input-panel">
               <span className="section-index">02 / ONCHAIN MATCH</span>
               <h2>Verify what actually launched</h2>
@@ -1020,7 +1038,7 @@ export default function Home() {
         )}
       </section>
 
-      {notice ? <button className="toast" onClick={() => setNotice("")} aria-label="Dismiss notification"><span>{notice}</span><span>×</span></button> : null}
+      {notice ? <button className="toast" onClick={() => setNotice("")} aria-label="Dismiss notification" aria-live="polite"><span>{notice}</span><span>×</span></button> : null}
 
       <section className="distribution-section" id="distribution" aria-labelledby="distribution-title">
         <div className="distribution-intro">
