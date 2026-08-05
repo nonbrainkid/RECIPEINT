@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FRONG_CONTRACT,
   TOKEN_CONTRACT,
@@ -23,13 +23,21 @@ import {
   parseTokenDecimals,
   sha256Hex,
 } from "./verifier-helpers";
+import {
+  type Eip6963ProviderDetail,
+  type EvmProvider,
+  type WalletOption,
+  mergeWalletOptions,
+  safeProviderError,
+  toEip6963Wallet,
+  walletInitials,
+} from "./wallet-providers";
 
 declare global {
   interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-      on?: (event: string, handler: (...args: unknown[]) => void) => void;
-      removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+    ethereum?: EvmProvider;
+    phantom?: {
+      ethereum?: EvmProvider;
     };
   }
 }
@@ -138,6 +146,16 @@ const shortAddress = (value: string) =>
 
 const normalizeHex = (value?: string) => (value || "0x").toLowerCase();
 
+function collectLegacyProviders() {
+  const candidates: EvmProvider[] = [];
+  const injected = window.ethereum;
+  if (Array.isArray(injected?.providers)) candidates.push(...injected.providers);
+  if (injected?.isMetaMask) candidates.push(injected);
+  if (window.phantom?.ethereum) candidates.push(window.phantom.ethereum);
+  if (injected) candidates.push(injected);
+  return [...new Set(candidates)];
+}
+
 function decodeAbiString(hex?: string | null) {
   if (!hex || hex === "0x") return null;
   try {
@@ -167,7 +185,11 @@ function decodeAddress(hex?: string | null) {
   return !isAddress(address) || address.toLowerCase() === ZERO_ADDRESS ? null : address;
 }
 
-async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
+async function rpcCall<T>(
+  method: string,
+  params: unknown[],
+  fallbackProvider?: EvmProvider | null,
+): Promise<T> {
   try {
     const response = await fetch(PUBLIC_RPC, {
       method: "POST",
@@ -179,30 +201,39 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
     if (payload.error) throw new Error(payload.error.message || "RPC error");
     return payload.result as T;
   } catch (error) {
-    if (window.ethereum) {
-      const walletChain = (await window.ethereum.request({ method: "eth_chainId" })) as string;
+    if (fallbackProvider) {
+      const walletChain = (await fallbackProvider.request({ method: "eth_chainId" })) as string;
       if (walletChain.toLowerCase() !== ROBINHOOD_CHAIN_HEX) {
         throw new Error(
           `Wallet fallback blocked: switch the wallet to Robinhood Chain (${ROBINHOOD_CHAIN_HEX}).`,
         );
       }
-      return (await window.ethereum.request({ method, params })) as T;
+      return (await fallbackProvider.request({ method, params })) as T;
     }
     throw error;
   }
 }
 
-async function safeRpcCall<T>(method: string, params: unknown[]): Promise<T | null> {
+async function safeRpcCall<T>(
+  method: string,
+  params: unknown[],
+  fallbackProvider?: EvmProvider | null,
+): Promise<T | null> {
   try {
-    return await rpcCall<T>(method, params);
+    return await rpcCall<T>(method, params, fallbackProvider);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Wallet fallback blocked:")) throw error;
     return null;
   }
 }
 
-async function readContract(address: string, data: string, blockTag: string) {
-  return safeRpcCall<string>("eth_call", [{ to: address, data }, blockTag]);
+async function readContract(
+  address: string,
+  data: string,
+  blockTag: string,
+  fallbackProvider?: EvmProvider | null,
+) {
+  return safeRpcCall<string>("eth_call", [{ to: address, data }, blockTag], fallbackProvider);
 }
 
 function StatusPill({ status }: { status: CheckStatus }) {
@@ -252,9 +283,42 @@ export default function Home() {
   const [tokenAddress, setTokenAddress] = useState("");
   const [verifyRows, setVerifyRows] = useState<VerifyRow[]>([]);
   const [verifyMeta, setVerifyMeta] = useState({ block: "", from: "", to: "" });
+  const [walletOptions, setWalletOptions] = useState<WalletOption[]>([]);
+  const [walletModalOpen, setWalletModalOpen] = useState(false);
+  const [selectedWallet, setSelectedWallet] = useState<Pick<WalletOption, "id" | "name"> | null>(null);
+  const selectedProviderRef = useRef<EvmProvider | null>(null);
+  const walletDialogRef = useRef<HTMLDivElement | null>(null);
 
   const update = (field: keyof FormState, value: string) =>
     setForm((current) => ({ ...current, [field]: value }));
+
+  const clearSelectedWallet = useCallback((message?: string) => {
+    selectedProviderRef.current = null;
+    setSelectedWallet(null);
+    setAccount("");
+    setWalletChainId(null);
+    if (message) setNotice(message);
+  }, []);
+
+  const rescanWallets = useCallback(() => {
+    const legacyProviders = collectLegacyProviders();
+    setWalletOptions((current) =>
+      mergeWalletOptions(
+        current.filter((wallet) => wallet.source === "eip6963"),
+        legacyProviders,
+      ),
+    );
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+    const selected = selectedProviderRef.current;
+    if (selected) {
+      void selected.request({ method: "eth_chainId" }).catch(() => {
+        if (selectedProviderRef.current === selected) {
+          clearSelectedWallet("The selected wallet disconnected. Choose a wallet again.");
+        }
+      });
+    }
+  }, [clearSelectedWallet]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -273,22 +337,67 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!window.ethereum?.on) return;
+    const handleAnnouncement = (event: Event) => {
+      const detail = (event as CustomEvent<Eip6963ProviderDetail>).detail;
+      const announced = toEip6963Wallet(detail);
+      if (!announced) return;
+      setWalletOptions((current) => {
+        const eip6963 = current.filter(
+          (wallet) => wallet.source === "eip6963" && wallet.id !== announced.id,
+        );
+        return mergeWalletOptions([...eip6963, announced], collectLegacyProviders());
+      });
+    };
+
+    window.addEventListener("eip6963:announceProvider", handleAnnouncement);
+    const discoveryTimer = window.setTimeout(rescanWallets, 0);
+    return () => {
+      window.clearTimeout(discoveryTimer);
+      window.removeEventListener("eip6963:announceProvider", handleAnnouncement);
+    };
+  }, [rescanWallets]);
+
+  useEffect(() => {
+    const provider = selectedProviderRef.current;
+    if (!selectedWallet || !provider?.on) return;
     const handleAccounts = (...args: unknown[]) => {
       const accounts = (args[0] || []) as string[];
-      setAccount(accounts[0] || "");
+      if (selectedProviderRef.current !== provider) return;
+      if (!isAddress(accounts[0] || "")) {
+        clearSelectedWallet("The selected wallet disconnected. Choose a wallet again.");
+        return;
+      }
+      setAccount(accounts[0]);
     };
     const handleChain = (...args: unknown[]) => {
+      if (selectedProviderRef.current !== provider) return;
       const chain = String(args[0] || "0x0");
       setWalletChainId(Number.parseInt(chain, 16));
     };
-    window.ethereum.on("accountsChanged", handleAccounts);
-    window.ethereum.on("chainChanged", handleChain);
-    return () => {
-      window.ethereum?.removeListener?.("accountsChanged", handleAccounts);
-      window.ethereum?.removeListener?.("chainChanged", handleChain);
+    const handleDisconnect = () => {
+      if (selectedProviderRef.current === provider) {
+        clearSelectedWallet("The selected wallet disconnected. Choose a wallet again.");
+      }
     };
-  }, []);
+    provider.on("accountsChanged", handleAccounts);
+    provider.on("chainChanged", handleChain);
+    provider.on("disconnect", handleDisconnect);
+    return () => {
+      provider.removeListener?.("accountsChanged", handleAccounts);
+      provider.removeListener?.("chainChanged", handleChain);
+      provider.removeListener?.("disconnect", handleDisconnect);
+    };
+  }, [clearSelectedWallet, selectedWallet]);
+
+  useEffect(() => {
+    if (!walletModalOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWalletModalOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    walletDialogRef.current?.focus();
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [walletModalOpen]);
 
   const transaction = useMemo(
     () => parsePreparedTransaction(form.transactionJson),
@@ -415,20 +524,29 @@ export default function Home() {
           ? { label: "Manifest ready", status: "confirmed" as CheckStatus }
           : { label: "Complete intent", status: "unknown" as CheckStatus };
 
-  async function connectWallet() {
-    if (!window.ethereum) {
-      setNotice("No EVM wallet detected. Install a wallet extension and refresh.");
-      return;
-    }
+  function connectWallet() {
+    rescanWallets();
+    setWalletModalOpen(true);
+  }
+
+  async function selectWallet(wallet: WalletOption) {
     setBusy("connect");
     try {
-      const accounts = (await window.ethereum.request({ method: "eth_requestAccounts" })) as string[];
-      const chainHex = (await window.ethereum.request({ method: "eth_chainId" })) as string;
-      setAccount(accounts[0] || "");
-      setWalletChainId(Number.parseInt(chainHex, 16));
-      setNotice("Wallet connected. No approvals or transactions were requested.");
+      const accounts = (await wallet.provider.request({ method: "eth_requestAccounts" })) as string[];
+      const chainHex = (await wallet.provider.request({ method: "eth_chainId" })) as string;
+      const chainId = Number.parseInt(chainHex, 16);
+      if (!Array.isArray(accounts) || !isAddress(accounts[0] || "")) {
+        throw new Error("Selected provider returned no EVM account.");
+      }
+      if (!Number.isSafeInteger(chainId)) throw new Error("Selected provider returned no chain ID.");
+      selectedProviderRef.current = wallet.provider;
+      setSelectedWallet({ id: wallet.id, name: wallet.name });
+      setAccount(accounts[0]);
+      setWalletChainId(chainId);
+      setWalletModalOpen(false);
+      setNotice(`${wallet.name} connected. No approvals or transactions were requested.`);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Wallet connection was rejected.");
+      setNotice(safeProviderError(error));
     } finally {
       setBusy("");
     }
@@ -451,16 +569,20 @@ export default function Home() {
   }
 
   async function switchNetwork() {
-    if (!window.ethereum) return connectWallet();
+    const provider = selectedProviderRef.current;
+    if (!provider) {
+      connectWallet();
+      return;
+    }
     setBusy("network");
     try {
       try {
-        await window.ethereum.request({
+        await provider.request({
           method: "wallet_switchEthereumChain",
           params: [{ chainId: ROBINHOOD_CHAIN_HEX }],
         });
       } catch {
-        await window.ethereum.request({
+        await provider.request({
           method: "wallet_addEthereumChain",
           params: [
             {
@@ -476,7 +598,7 @@ export default function Home() {
       setWalletChainId(ROBINHOOD_CHAIN_ID);
       setNotice("Robinhood Chain selected.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Network switch was rejected.");
+      setNotice(safeProviderError(error));
     } finally {
       setBusy("");
     }
@@ -548,7 +670,8 @@ export default function Home() {
   }
 
   async function signManifest() {
-    if (!manifest || !window.ethereum || !account) {
+    const provider = selectedProviderRef.current;
+    if (!manifest || !provider || !account) {
       setNotice("Generate a manifest and connect the creator wallet first.");
       return;
     }
@@ -591,7 +714,7 @@ export default function Home() {
           expiresAt: manifest.expiresAt,
         },
       };
-      const signed = (await window.ethereum.request({
+      const signed = (await provider.request({
         method: "eth_signTypedData_v4",
         params: [account, JSON.stringify(typedData)],
       })) as string;
@@ -601,7 +724,7 @@ export default function Home() {
       window.localStorage.setItem("recipeint:manifest", JSON.stringify(signedManifest));
       setNotice("Manifest signed. This was a message signature—not a token approval or transaction.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Manifest signature was rejected.");
+      setNotice(safeProviderError(error));
     } finally {
       setBusy("");
     }
@@ -644,6 +767,7 @@ export default function Home() {
     setBusy("verify");
     setVerifyRows([]);
     try {
+      const walletFallback = selectedProviderRef.current;
       const rows: VerifyRow[] = [];
       const integrity = await evaluateManifestIntegrity(
         manifest ? (manifest as unknown as Record<string, unknown>) : null,
@@ -656,8 +780,16 @@ export default function Home() {
 
       if (hasTransaction) {
         [tx, receipt] = await Promise.all([
-          rpcCall<Record<string, string> | null>("eth_getTransactionByHash", [transactionHash]),
-          rpcCall<Record<string, string> | null>("eth_getTransactionReceipt", [transactionHash]),
+          rpcCall<Record<string, string> | null>(
+            "eth_getTransactionByHash",
+            [transactionHash],
+            walletFallback,
+          ),
+          rpcCall<Record<string, string> | null>(
+            "eth_getTransactionReceipt",
+            [transactionHash],
+            walletFallback,
+          ),
         ]);
         if (!tx || !receipt) throw new Error("Transaction was not found or is not yet indexed.");
         blockTag = receipt.blockNumber || "latest";
@@ -765,15 +897,27 @@ export default function Home() {
           adminHex,
           beaconHex,
         ] = await Promise.all([
-          readContract(deployedToken, "0x06fdde03", blockTag),
-          readContract(deployedToken, "0x95d89b41", blockTag),
-          readContract(deployedToken, "0x313ce567", blockTag),
-          readContract(deployedToken, "0x18160ddd", blockTag),
-          readContract(deployedToken, "0x8da5cb5b", blockTag),
-          safeRpcCall<string>("eth_getCode", [deployedToken, blockTag]),
-          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_IMPLEMENTATION_SLOT, blockTag]),
-          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_ADMIN_SLOT, blockTag]),
-          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_BEACON_SLOT, blockTag]),
+          readContract(deployedToken, "0x06fdde03", blockTag, walletFallback),
+          readContract(deployedToken, "0x95d89b41", blockTag, walletFallback),
+          readContract(deployedToken, "0x313ce567", blockTag, walletFallback),
+          readContract(deployedToken, "0x18160ddd", blockTag, walletFallback),
+          readContract(deployedToken, "0x8da5cb5b", blockTag, walletFallback),
+          safeRpcCall<string>("eth_getCode", [deployedToken, blockTag], walletFallback),
+          safeRpcCall<string>(
+            "eth_getStorageAt",
+            [deployedToken, EIP1967_IMPLEMENTATION_SLOT, blockTag],
+            walletFallback,
+          ),
+          safeRpcCall<string>(
+            "eth_getStorageAt",
+            [deployedToken, EIP1967_ADMIN_SLOT, blockTag],
+            walletFallback,
+          ),
+          safeRpcCall<string>(
+            "eth_getStorageAt",
+            [deployedToken, EIP1967_BEACON_SLOT, blockTag],
+            walletFallback,
+          ),
         ]);
         const name = decodeAbiString(nameHex);
         const symbol = decodeAbiString(symbolHex);
@@ -935,13 +1079,99 @@ export default function Home() {
             className="wallet-button"
             onClick={connectWallet}
             disabled={busy === "connect"}
-            aria-label={account ? `Connected wallet ${shortAddress(account)}` : busy === "connect" ? "Connecting wallet" : "Connect wallet"}
+            aria-label={account && selectedWallet ? `${selectedWallet.name}, ${shortAddress(account)}. Choose another wallet` : busy === "connect" ? "Connecting wallet" : "Choose wallet"}
           >
             <span className={account ? "wallet-dot connected" : "wallet-dot"} />
-            <span className="wallet-label">{account ? shortAddress(account) : busy === "connect" ? "Connecting…" : "Connect wallet"}</span>
+            <span className="wallet-label">{account && selectedWallet ? <><strong>{selectedWallet.name}</strong><small>{shortAddress(account)}</small></> : busy === "connect" ? "Connecting…" : "Choose wallet"}</span>
           </button>
         </div>
       </header>
+
+      {walletModalOpen ? (
+        <div
+          className="wallet-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setWalletModalOpen(false);
+          }}
+        >
+          <div
+            className="wallet-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="wallet-dialog-title"
+            aria-describedby="wallet-dialog-description"
+            tabIndex={-1}
+            ref={walletDialogRef}
+          >
+            <div className="wallet-dialog-head">
+              <div>
+                <span className="section-index">INJECTED EVM WALLETS</span>
+                <h2 id="wallet-dialog-title">Choose your wallet</h2>
+              </div>
+              <button
+                className="wallet-dialog-close"
+                type="button"
+                onClick={() => setWalletModalOpen(false)}
+                aria-label="Close wallet chooser"
+              >
+                ×
+              </button>
+            </div>
+            <p id="wallet-dialog-description" className="wallet-dialog-copy">
+              Select the exact provider for every wallet request. Names and domains are self-attested
+              metadata, not proof of identity.
+            </p>
+            <p className="wallet-trust-note">
+              Wallet names are reported by browser extensions. Confirm the popup belongs to the wallet you selected.
+            </p>
+
+            {walletOptions.length ? (
+              <div className="wallet-option-list" aria-label="Detected EVM wallets">
+                {walletOptions.map((wallet) => (
+                  <button
+                    key={wallet.id}
+                    className="wallet-option"
+                    type="button"
+                    onClick={() => selectWallet(wallet)}
+                    disabled={busy === "connect"}
+                    aria-label={`Connect ${wallet.name}`}
+                  >
+                    <span className="wallet-option-icon" aria-hidden="true">
+                      {wallet.icon ? (
+                        // EIP-6963 icons are runtime data URIs and cannot use the Next image optimizer.
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={wallet.icon} alt="" />
+                      ) : walletInitials(wallet.name)}
+                    </span>
+                    <span className="wallet-option-copy">
+                      <strong>{wallet.name}</strong>
+                      <small>{wallet.rdns}</small>
+                    </span>
+                    <span className="wallet-option-action">
+                      {selectedWallet?.id === wallet.id ? "Connected" : "Connect"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="wallet-empty">
+                <strong>No injected EVM wallets detected</strong>
+                <p>Install an EVM browser wallet, then refresh this list. WalletConnect is not used.</p>
+                <a href="https://metamask.io/download/" target="_blank" rel="noreferrer">
+                  Install MetaMask ↗
+                </a>
+              </div>
+            )}
+
+            <div className="wallet-dialog-foot">
+              <button className="wallet-rescan" type="button" onClick={rescanWallets}>
+                Refresh / rescan
+              </button>
+              <small>Only the wallet you choose receives subsequent requests.</small>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <section className="hero" id="top">
         <div className="eyebrow"><span>Creator-side security</span><span>Robinhood Chain · 4663</span></div>

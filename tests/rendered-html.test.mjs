@@ -11,6 +11,12 @@ import {
   parsePreparedTransaction,
   sha256Hex,
 } from "../app/verifier-helpers.ts";
+import {
+  legacyWalletName,
+  mergeWalletOptions,
+  safeWalletIcon,
+  toEip6963Wallet,
+} from "../app/wallet-providers.ts";
 
 const root = new URL("../", import.meta.url);
 
@@ -51,6 +57,21 @@ test("keeps wallet actions limited to disclosure and verification", async () => 
   const packageData = JSON.parse(packageJson);
 
   assert.match(page, /eth_signTypedData_v4/);
+  assert.match(page, /eip6963:announceProvider/);
+  assert.match(page, /eip6963:requestProvider/);
+  assert.match(page, /selectedProviderRef\.current/);
+  assert.match(page, /No injected EVM wallets detected/);
+  assert.match(page, /https:\/\/metamask\.io\/download\//);
+  assert.match(page, /Wallet names are reported by browser extensions/);
+  assert.doesNotMatch(page, /role="listitem"/);
+  assert.equal(page.match(/eth_requestAccounts/g)?.length, 1);
+  const connectWalletBody = page.slice(
+    page.indexOf("function connectWallet()"),
+    page.indexOf("async function selectWallet"),
+  );
+  assert.doesNotMatch(connectWalletBody, /eth_requestAccounts/);
+  assert.match(page, /wallet\.provider\.request\(\{ method: "eth_requestAccounts" \}\)/);
+  assert.doesNotMatch(page, /localStorage\.(?:setItem|getItem)\([^\n]*(?:provider|selectedWallet)/i);
   assert.match(page, /eth_getTransactionByHash/);
   assert.match(page, /eth_getStorageAt/);
   assert.match(page, /0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103/);
@@ -171,4 +192,33 @@ test("marks tampered and expired manifests as mismatches without claiming signat
     (await evaluateManifestIntegrity({ ...expired, manifestHash: expiredHash }, Date.now())).status,
     "mismatch",
   );
+});
+
+test("dedupes injected wallets and prefers EIP-6963 over legacy aliases", () => {
+  const provider = { request: async () => null, isMetaMask: true };
+  const announced = toEip6963Wallet({
+    info: {
+      uuid: "metamask-test",
+      name: "MetaMask",
+      rdns: "io.metamask",
+      icon: "data:image/png;base64,AA==",
+    },
+    provider,
+  });
+  assert.ok(announced);
+  const merged = mergeWalletOptions([announced, announced], [provider, provider]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].source, "eip6963");
+});
+
+test("names Phantom before MetaMask compatibility flags and sanitizes wallet icons", () => {
+  const compatibilityProvider = {
+    request: async () => null,
+    isMetaMask: true,
+    isPhantom: true,
+  };
+  assert.equal(legacyWalletName(compatibilityProvider), "Phantom");
+  assert.match(safeWalletIcon("data:image/svg+xml;base64,PHN2Zy8+") || "", /^data:image/);
+  assert.equal(safeWalletIcon("https://example.com/icon.png"), null);
+  assert.equal(safeWalletIcon("data:text/html,<script>alert(1)</script>"), null);
 });
