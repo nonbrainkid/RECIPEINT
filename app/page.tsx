@@ -8,6 +8,21 @@ import {
   projectLinks,
   projectLinkStatusLabel,
 } from "./project-links";
+import {
+  aggregateEvidenceStatus,
+  canonicalize,
+  classifyTokenProvenance,
+  compareExactSupply,
+  detectEip1167Implementation,
+  evaluateManifestIntegrity,
+  formatTokenUnits,
+  MANIFEST_SCHEMA,
+  normalizeRpcQuantity,
+  parseAbiUint256,
+  parsePreparedTransaction,
+  parseTokenDecimals,
+  sha256Hex,
+} from "./verifier-helpers";
 
 declare global {
   interface Window {
@@ -66,7 +81,7 @@ type StoredManifest = {
     to: string;
     value: string;
     data: string;
-    chainId: number;
+    chainId: number | null;
     sha256: string;
   };
   declarations: {
@@ -94,17 +109,19 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const EIP1967_IMPLEMENTATION_SLOT =
   "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
 const EIP1967_ADMIN_SLOT =
-  "0xb53127684a568b3173ae13b9f8a6016e0190000000000000000000000000000";
+  "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
+const EIP1967_BEACON_SLOT =
+  "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50";
 
 const INITIAL_FORM: FormState = {
-  tokenName: "RECIPEINT",
-  tokenSymbol: "RCPNT",
-  supply: "1000000000",
+  tokenName: "",
+  tokenSymbol: "",
+  supply: "",
   beneficiary: "",
   treasury: "",
   website: "",
   xUrl: "",
-  launchpad: "pools.trade",
+  launchpad: "",
   transactionJson: "",
 };
 
@@ -120,57 +137,6 @@ const shortAddress = (value: string) =>
   isAddress(value) ? `${value.slice(0, 6)}…${value.slice(-4)}` : value || "Not set";
 
 const normalizeHex = (value?: string) => (value || "0x").toLowerCase();
-
-function canonicalize(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-      a.localeCompare(b),
-    );
-    return `{${entries
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-async function sha256Hex(input: string) {
-  const encoded = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", encoded);
-  return `0x${Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-function parseTransaction(input: string) {
-  if (!input.trim()) return null;
-  try {
-    const parsed = JSON.parse(input) as Record<string, unknown>;
-    const rawChain = parsed.chainId;
-    const chainId =
-      typeof rawChain === "string"
-        ? rawChain.startsWith("0x")
-          ? Number.parseInt(rawChain, 16)
-          : Number.parseInt(rawChain, 10)
-        : typeof rawChain === "number"
-          ? rawChain
-          : ROBINHOOD_CHAIN_ID;
-    return {
-      to: typeof parsed.to === "string" ? parsed.to : "",
-      from: typeof parsed.from === "string" ? parsed.from : "",
-      value: typeof parsed.value === "string" ? parsed.value : "0x0",
-      data:
-        typeof parsed.data === "string"
-          ? parsed.data
-          : typeof parsed.input === "string"
-            ? parsed.input
-            : "0x",
-      chainId,
-    };
-  } catch {
-    return { error: true } as const;
-  }
-}
 
 function decodeAbiString(hex?: string | null) {
   if (!hex || hex === "0x") return null;
@@ -198,15 +164,7 @@ function decodeAbiString(hex?: string | null) {
 function decodeAddress(hex?: string | null) {
   if (!hex || hex.length < 42) return null;
   const address = `0x${hex.slice(-40)}`;
-  return address.toLowerCase() === ZERO_ADDRESS ? null : address;
-}
-
-function formatUnits(raw: bigint, decimals: number) {
-  if (decimals === 0) return raw.toLocaleString("en-US");
-  const base = 10n ** BigInt(decimals);
-  const whole = raw / base;
-  const fraction = (raw % base).toString().padStart(decimals, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString("en-US")}${fraction ? `.${fraction.slice(0, 6)}` : ""}`;
+  return !isAddress(address) || address.toLowerCase() === ZERO_ADDRESS ? null : address;
 }
 
 async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
@@ -222,18 +180,29 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
     return payload.result as T;
   } catch (error) {
     if (window.ethereum) {
+      const walletChain = (await window.ethereum.request({ method: "eth_chainId" })) as string;
+      if (walletChain.toLowerCase() !== ROBINHOOD_CHAIN_HEX) {
+        throw new Error(
+          `Wallet fallback blocked: switch the wallet to Robinhood Chain (${ROBINHOOD_CHAIN_HEX}).`,
+        );
+      }
       return (await window.ethereum.request({ method, params })) as T;
     }
     throw error;
   }
 }
 
-async function readContract(address: string, data: string) {
+async function safeRpcCall<T>(method: string, params: unknown[]): Promise<T | null> {
   try {
-    return await rpcCall<string>("eth_call", [{ to: address, data }, "latest"]);
-  } catch {
+    return await rpcCall<T>(method, params);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Wallet fallback blocked:")) throw error;
     return null;
   }
+}
+
+async function readContract(address: string, data: string, blockTag: string) {
+  return safeRpcCall<string>("eth_call", [{ to: address, data }, blockTag]);
 }
 
 function StatusPill({ status }: { status: CheckStatus }) {
@@ -321,7 +290,10 @@ export default function Home() {
     };
   }, []);
 
-  const transaction = useMemo(() => parseTransaction(form.transactionJson), [form.transactionJson]);
+  const transaction = useMemo(
+    () => parsePreparedTransaction(form.transactionJson),
+    [form.transactionJson],
+  );
 
   const checks = useMemo<Check[]>(() => {
     const result: Check[] = [];
@@ -356,31 +328,33 @@ export default function Home() {
       status:
         !form.tokenName || !form.tokenSymbol
           ? "unknown"
-          : form.tokenSymbol.toUpperCase() === "RCPT"
-            ? "warning"
-            : "confirmed",
-      detail:
-        form.tokenSymbol.toUpperCase() === "RCPT"
-          ? "$RCPT already collides with several Robinhood Chain tokens. Use $RCPNT."
-          : "Name and ticker are creator-declared until matched onchain.",
+          : "unknown",
+      detail: "Creator declaration recorded; name and ticker are not onchain proof.",
     });
     result.push({
       label: "Expected supply",
-      value: form.supply ? Number(form.supply.replace(/,/g, "")).toLocaleString("en-US") : "Not set",
-      status: Number(form.supply.replace(/,/g, "")) > 0 ? "confirmed" : "unknown",
-      detail: "Actual totalSupply will be checked after deployment.",
+      value: /^(0|[1-9][0-9]*)$/.test(form.supply.replace(/,/g, ""))
+        ? BigInt(form.supply.replace(/,/g, "")).toLocaleString("en-US")
+        : "Not set",
+      status:
+        !form.supply
+          ? "unknown"
+          : /^[1-9][0-9]*$/.test(form.supply.replace(/,/g, ""))
+            ? "unknown"
+            : "mismatch",
+      detail: "Creator declaration only; exact raw totalSupply will be checked after deployment.",
     });
     result.push({
       label: "Fee recipient",
       value: shortAddress(form.beneficiary),
-      status: isAddress(form.beneficiary) ? "confirmed" : "unknown",
-      detail: "Prevents creator fees from silently routing to the wrong wallet.",
+      status: form.beneficiary && !isAddress(form.beneficiary) ? "mismatch" : "unknown",
+      detail: "Creator declaration only. The launch transaction must still prove the fee route.",
     });
     result.push({
       label: "Treasury",
       value: shortAddress(form.treasury),
-      status: isAddress(form.treasury) ? "confirmed" : "unknown",
-      detail: "Keep treasury separate from the deployer wallet.",
+      status: form.treasury && !isAddress(form.treasury) ? "mismatch" : "unknown",
+      detail: "Creator declaration only. The launch transaction must still prove the treasury route.",
     });
     result.push({
       label: "Prepared transaction",
@@ -394,11 +368,18 @@ export default function Home() {
         transaction && "error" in transaction
           ? "mismatch"
           : transaction
-            ? transaction.chainId === ROBINHOOD_CHAIN_ID && isAddress(transaction.to)
-              ? "confirmed"
-              : "mismatch"
+            ? !isAddress(transaction.to)
+              ? "mismatch"
+              : !transaction.chainIdProvided || transaction.chainId === null
+                ? "unknown"
+                : transaction.chainId === ROBINHOOD_CHAIN_ID
+                  ? "unknown"
+                  : "mismatch"
             : "unknown",
-      detail: "Paste the wallet transaction request to bind the manifest to exact calldata.",
+      detail:
+        transaction && !("error" in transaction) && !transaction.chainIdProvided
+          ? "chainId is missing. The creator declaration cannot prove Robinhood Chain."
+          : "Paste the wallet transaction request to bind the manifest to exact calldata.",
     });
     result.push({
       label: "Additional mint",
@@ -428,9 +409,11 @@ export default function Home() {
     ? { label: "Mismatch found", status: "mismatch" as CheckStatus }
     : counts.warning
       ? { label: "Review warnings", status: "warning" as CheckStatus }
-      : account && walletChainId === ROBINHOOD_CHAIN_ID && form.tokenName && form.tokenSymbol
-        ? { label: "Manifest ready", status: "confirmed" as CheckStatus }
-        : { label: "Complete intent", status: "unknown" as CheckStatus };
+      : counts.unknown
+        ? { label: "Evidence incomplete", status: "unknown" as CheckStatus }
+        : checks.length
+          ? { label: "Manifest ready", status: "confirmed" as CheckStatus }
+          : { label: "Complete intent", status: "unknown" as CheckStatus };
 
   async function connectWallet() {
     if (!window.ethereum) {
@@ -508,6 +491,10 @@ export default function Home() {
       setNotice("Token name, ticker and expected supply are required.");
       return;
     }
+    if (!/^[1-9][0-9]*$/.test(form.supply.replace(/,/g, ""))) {
+      setNotice("Expected supply must be a positive whole number.");
+      return;
+    }
     if (counts.mismatch) {
       setNotice("Resolve mismatches before generating a manifest.");
       return;
@@ -519,12 +506,12 @@ export default function Home() {
         to: tx?.to || "",
         value: tx?.value || "0x0",
         data: tx?.data || "0x",
-        chainId: tx?.chainId || ROBINHOOD_CHAIN_ID,
+        chainId: tx?.chainId ?? null,
       };
       const txHashValue = await sha256Hex(canonicalize(txPayload));
       const now = new Date();
       const base = {
-        schemaVersion: "recipeint.launch-manifest/0.1",
+        schemaVersion: MANIFEST_SCHEMA,
         manifestId: crypto.randomUUID(),
         createdAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
@@ -637,174 +624,273 @@ export default function Home() {
   }
 
   async function verifyLaunch() {
-    if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
-      setNotice("Enter a valid 32-byte transaction hash.");
+    const transactionHash = txHash.trim();
+    const suppliedToken = tokenAddress.trim();
+    const hasTransaction = Boolean(transactionHash);
+    const hasToken = Boolean(suppliedToken);
+    if (!hasTransaction && !hasToken) {
+      setNotice("Enter a transaction hash or token contract address.");
       return;
     }
+    if (hasTransaction && !/^0x[a-fA-F0-9]{64}$/.test(transactionHash)) {
+      setNotice("Enter a valid 32-byte transaction hash, or leave it empty for token-only inspection.");
+      return;
+    }
+    if (hasToken && !isAddress(suppliedToken)) {
+      setNotice("Enter a valid 20-byte token contract address.");
+      return;
+    }
+
     setBusy("verify");
     setVerifyRows([]);
     try {
-      const [tx, receipt] = await Promise.all([
-        rpcCall<Record<string, string> | null>("eth_getTransactionByHash", [txHash]),
-        rpcCall<Record<string, string> | null>("eth_getTransactionReceipt", [txHash]),
-      ]);
-      if (!tx || !receipt) throw new Error("Transaction was not found or is not yet indexed.");
-
       const rows: VerifyRow[] = [];
-      const succeeded = receipt.status === "0x1";
-      rows.push({
-        label: "Transaction execution",
-        actual: succeeded ? "Succeeded" : "Reverted",
-        status: succeeded ? "confirmed" : "mismatch",
-        detail: succeeded ? "The launch transaction was included successfully." : "No launch state should be trusted.",
-      });
-      rows.push({
-        label: "Creator wallet",
-        expected: manifest?.creator,
-        actual: tx.from || "Unknown",
-        status:
-          manifest?.creator && tx.from.toLowerCase() !== manifest.creator.toLowerCase()
-            ? "mismatch"
-            : manifest?.creator
-              ? "confirmed"
+      const integrity = await evaluateManifestIntegrity(
+        manifest ? (manifest as unknown as Record<string, unknown>) : null,
+      );
+      rows.push({ label: "Manifest integrity", ...integrity });
+
+      let tx: Record<string, string> | null = null;
+      let receipt: Record<string, string> | null = null;
+      let blockTag = "latest";
+
+      if (hasTransaction) {
+        [tx, receipt] = await Promise.all([
+          rpcCall<Record<string, string> | null>("eth_getTransactionByHash", [transactionHash]),
+          rpcCall<Record<string, string> | null>("eth_getTransactionReceipt", [transactionHash]),
+        ]);
+        if (!tx || !receipt) throw new Error("Transaction was not found or is not yet indexed.");
+        blockTag = receipt.blockNumber || "latest";
+
+        const succeeded = receipt.status === "0x1";
+        rows.push({
+          label: "Transaction execution",
+          actual: succeeded ? "Succeeded" : "Reverted",
+          status: succeeded ? "confirmed" : "mismatch",
+          detail: succeeded
+            ? `Included at evidence block ${blockTag}.`
+            : "No launch state should be trusted from a reverted transaction.",
+        });
+        const onchainChainId = normalizeRpcQuantity(tx.chainId);
+        const declaredChainId = manifest?.transaction.chainId;
+        rows.push({
+          label: "Transaction chain ID",
+          expected: declaredChainId === null || declaredChainId === undefined ? undefined : String(declaredChainId),
+          actual: onchainChainId === null ? "Missing" : onchainChainId.toString(),
+          status:
+            onchainChainId === null || declaredChainId === null || declaredChainId === undefined
+              ? "unknown"
+              : onchainChainId !== BigInt(ROBINHOOD_CHAIN_ID) || declaredChainId !== ROBINHOOD_CHAIN_ID
+                ? "mismatch"
+                : "confirmed",
+          detail: "Missing chainId remains Unknown; an explicit non-4663 value is a mismatch.",
+        });
+        rows.push({
+          label: "Creator wallet",
+          expected: manifest?.creator,
+          actual: tx.from || "Unknown",
+          status:
+            !manifest?.creator || !tx.from
+              ? "unknown"
+              : tx.from.toLowerCase() === manifest.creator.toLowerCase()
+                ? "confirmed"
+                : "mismatch",
+          detail: "Compared with the creator declaration. Signature recovery is not performed here.",
+        });
+        rows.push({
+          label: "Transaction target",
+          expected: manifest?.transaction.to || undefined,
+          actual: tx.to || "Contract creation",
+          status:
+            manifest?.transaction.to && tx.to
+              ? tx.to.toLowerCase() === manifest.transaction.to.toLowerCase()
+                ? "confirmed"
+                : "mismatch"
               : "unknown",
-        detail: "Compared with the wallet that signed the saved manifest.",
-      });
-      rows.push({
-        label: "Transaction target",
-        expected: manifest?.transaction.to || undefined,
-        actual: tx.to || "Contract creation",
-        status:
-          manifest?.transaction.to && tx.to
-            ? tx.to.toLowerCase() === manifest.transaction.to.toLowerCase()
+          detail: "A target mismatch can redirect otherwise identical calldata.",
+        });
+        rows.push({
+          label: "Transaction calldata",
+          expected: manifest?.transaction.data
+            ? `${manifest.transaction.data.slice(0, 18)}…`
+            : undefined,
+          actual: tx.input ? `${tx.input.slice(0, 18)}…` : "0x",
+          status: manifest?.transaction.data
+            ? normalizeHex(tx.input) === normalizeHex(manifest.transaction.data)
               ? "confirmed"
               : "mismatch"
             : "unknown",
-        detail: "A factory mismatch can redirect an otherwise identical launch.",
-      });
-      rows.push({
-        label: "Transaction calldata",
-        expected: manifest?.transaction.data ? `${manifest.transaction.data.slice(0, 18)}…` : undefined,
-        actual: tx.input ? `${tx.input.slice(0, 18)}…` : "0x",
-        status: manifest?.transaction.data
-          ? normalizeHex(tx.input) === normalizeHex(manifest.transaction.data)
-            ? "confirmed"
-            : "mismatch"
-          : "unknown",
-        detail: "Exact byte-for-byte comparison with the prepared transaction.",
-      });
+          detail: "Exact byte-for-byte comparison with the prepared transaction.",
+        });
+        const expectedValue = normalizeRpcQuantity(manifest?.transaction.value);
+        const actualValue = normalizeRpcQuantity(tx.value);
+        rows.push({
+          label: "Transaction value",
+          expected: manifest?.transaction.value,
+          actual: tx.value || "Unreadable",
+          status:
+            expectedValue === null || actualValue === null
+              ? "unknown"
+              : expectedValue === actualValue
+                ? "confirmed"
+                : "mismatch",
+          detail: "Exact native-token value comparison; hidden value changes can alter launch economics.",
+        });
+      } else {
+        rows.push({
+          label: "Launch transaction",
+          actual: "Not provided",
+          status: "unknown",
+          detail: "Token-only inspection uses latest state and cannot prove the launch transaction.",
+        });
+      }
 
-      const deployedToken = tokenAddress || receipt.contractAddress || "";
+      const provenance = classifyTokenProvenance({
+        hasTransaction,
+        receiptContractAddress: receipt?.contractAddress,
+        providedTokenAddress: suppliedToken,
+      });
+      rows.push({ label: "Token provenance", ...provenance });
+
+      const deployedToken = provenance.inspectionAddress || "";
       if (isAddress(deployedToken)) {
-        const [nameHex, symbolHex, decimalsHex, supplyHex, ownerHex, code, implementationHex, adminHex] =
-          await Promise.all([
-            readContract(deployedToken, "0x06fdde03"),
-            readContract(deployedToken, "0x95d89b41"),
-            readContract(deployedToken, "0x313ce567"),
-            readContract(deployedToken, "0x18160ddd"),
-            readContract(deployedToken, "0x8da5cb5b"),
-            rpcCall<string>("eth_getCode", [deployedToken, "latest"]),
-            rpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_IMPLEMENTATION_SLOT, "latest"]),
-            rpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_ADMIN_SLOT, "latest"]),
-          ]);
-        const name = decodeAbiString(nameHex) || "Unreadable";
-        const symbol = decodeAbiString(symbolHex) || "Unreadable";
-        const decimals = decimalsHex ? Number.parseInt(decimalsHex, 16) : 18;
-        const supply = supplyHex ? formatUnits(BigInt(supplyHex), decimals) : "Unreadable";
+        const [
+          nameHex,
+          symbolHex,
+          decimalsHex,
+          supplyHex,
+          ownerHex,
+          code,
+          implementationHex,
+          adminHex,
+          beaconHex,
+        ] = await Promise.all([
+          readContract(deployedToken, "0x06fdde03", blockTag),
+          readContract(deployedToken, "0x95d89b41", blockTag),
+          readContract(deployedToken, "0x313ce567", blockTag),
+          readContract(deployedToken, "0x18160ddd", blockTag),
+          readContract(deployedToken, "0x8da5cb5b", blockTag),
+          safeRpcCall<string>("eth_getCode", [deployedToken, blockTag]),
+          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_IMPLEMENTATION_SLOT, blockTag]),
+          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_ADMIN_SLOT, blockTag]),
+          safeRpcCall<string>("eth_getStorageAt", [deployedToken, EIP1967_BEACON_SLOT, blockTag]),
+        ]);
+        const name = decodeAbiString(nameHex);
+        const symbol = decodeAbiString(symbolHex);
+        const decimals = parseTokenDecimals(decimalsHex);
+        const rawSupply = parseAbiUint256(supplyHex);
+        const supplyComparison = compareExactSupply(
+          manifest?.token.expectedSupply,
+          supplyHex,
+          decimals,
+        );
         const owner = decodeAddress(ownerHex);
         const implementation = decodeAddress(implementationHex);
         const admin = decodeAddress(adminHex);
-        const expectedSupply = manifest?.token.expectedSupply.replace(/^0+/, "") || "";
-        const actualSupply = supply.replace(/,/g, "").split(".")[0].replace(/^0+/, "");
+        const beacon = decodeAddress(beaconHex);
+        const minimalProxy = detectEip1167Implementation(code);
+        const evidenceLabel = blockTag === "latest" ? "latest state" : `block ${blockTag}`;
 
         rows.push({
           label: "Token bytecode",
           actual: code && code !== "0x" ? `${(code.length - 2) / 2} bytes deployed` : "No bytecode",
-          status: code && code !== "0x" ? "confirmed" : "mismatch",
-          detail: `Read directly from ${shortAddress(deployedToken)}.`,
+          status: code === null ? "unknown" : code !== "0x" ? "confirmed" : "mismatch",
+          detail: `Read from ${shortAddress(deployedToken)} at ${evidenceLabel}.`,
         });
         rows.push({
           label: "Token name",
           expected: manifest?.token.name,
-          actual: name,
-          status: manifest?.token.name
-            ? name === manifest.token.name
-              ? "confirmed"
-              : "mismatch"
-            : "unknown",
-          detail: "Read from name().",
+          actual: name || "Unreadable",
+          status: !name
+            ? "unknown"
+            : manifest?.token.name
+              ? name === manifest.token.name
+                ? "confirmed"
+                : "mismatch"
+              : "unknown",
+          detail: `name() at ${evidenceLabel}.`,
         });
         rows.push({
           label: "Token ticker",
           expected: manifest?.token.symbol,
-          actual: symbol,
-          status: manifest?.token.symbol
-            ? symbol === manifest.token.symbol
-              ? "confirmed"
-              : "mismatch"
-            : "unknown",
-          detail: "Read from symbol().",
+          actual: symbol || "Unreadable",
+          status: !symbol
+            ? "unknown"
+            : manifest?.token.symbol
+              ? symbol === manifest.token.symbol
+                ? "confirmed"
+                : "mismatch"
+              : "unknown",
+          detail: `symbol() at ${evidenceLabel}.`,
+        });
+        rows.push({
+          label: "Token decimals",
+          actual: decimals === null ? "Unreadable or unreasonable" : String(decimals),
+          status: decimals === null ? "unknown" : "confirmed",
+          detail: `decimals() at ${evidenceLabel}; values above 77 are rejected as unreasonable.`,
         });
         rows.push({
           label: "Total supply",
           expected: manifest?.token.expectedSupply,
-          actual: supply,
-          status: manifest?.token.expectedSupply
-            ? expectedSupply === actualSupply
-              ? "confirmed"
-              : "mismatch"
-            : "unknown",
-          detail: `totalSupply() with ${decimals} decimals.`,
+          actual:
+            rawSupply !== null && decimals !== null
+              ? `${formatTokenUnits(rawSupply, decimals)} tokens · raw ${rawSupply.toString()}`
+              : rawSupply !== null
+                ? `raw ${rawSupply.toString()} · decimals unreadable`
+                : "Unreadable",
+          status: supplyComparison.status,
+          detail: `${supplyComparison.detail} Evidence: ${evidenceLabel}.`,
         });
         rows.push({
           label: "Owner",
-          actual: owner || "No standard owner()",
+          actual: owner || "No standard owner() detected",
           status: owner ? "warning" : "unknown",
           detail: owner
             ? "A live owner may retain privileged control. Inspect its callable functions."
-            : "Absence of owner() does not prove absence of admin roles.",
+            : "A failed or empty owner() read does not prove absence of admin roles.",
         });
+
+        const proxyParts = [
+          minimalProxy ? `EIP-1167 implementation ${shortAddress(minimalProxy)}` : "",
+          implementation ? `EIP-1967 implementation ${shortAddress(implementation)}` : "",
+          beacon ? `EIP-1967 beacon ${shortAddress(beacon)}` : "",
+          admin ? `EIP-1967 admin ${shortAddress(admin)}` : "",
+        ].filter(Boolean);
         rows.push({
-          label: "EIP-1967 proxy",
-          actual: implementation ? `Implementation ${shortAddress(implementation)}` : "No implementation slot",
-          status: implementation ? "warning" : "confirmed",
-          detail: implementation
-            ? "Upgradeable code can change after this check."
-            : "Standard EIP-1967 implementation slot is empty.",
-        });
-        rows.push({
-          label: "EIP-1967 admin",
-          actual: admin ? shortAddress(admin) : "No standard admin slot",
-          status: admin ? "warning" : "confirmed",
-          detail: admin ? "This address may control upgrades." : "Standard EIP-1967 admin slot is empty.",
+          label: "Proxy detection",
+          actual: proxyParts.length ? proxyParts.join(" · ") : "No standard proxy detected",
+          status: proxyParts.length ? "warning" : "unknown",
+          detail: proxyParts.length
+            ? `Standard runtime/slots indicate upgrade or delegation paths at ${evidenceLabel}.`
+            : "Empty standard slots and no EIP-1167 pattern do not prove the contract is non-upgradeable.",
         });
       } else {
         rows.push({
           label: "Token contract",
           actual: "Not provided",
           status: "unknown",
-          detail: "Factory launches do not expose contractAddress in the receipt. Paste the token address to inspect it.",
+          detail: "Supply a token address to inspect deployed code and token state.",
         });
       }
 
       setVerifyRows(rows);
       setVerifyMeta({
-        block: Number.parseInt(receipt.blockNumber || "0x0", 16).toLocaleString("en-US"),
-        from: tx.from || "",
-        to: tx.to || "",
+        block:
+          blockTag === "latest"
+            ? "latest"
+            : (normalizeRpcQuantity(blockTag)?.toLocaleString("en-US") ?? blockTag),
+        from: tx?.from || "",
+        to: tx?.to || "",
       });
-      setNotice("Launch read from Robinhood Chain. Review every Unknown and Warning manually.");
+      setNotice("Evidence read from Robinhood Chain. Review every Unknown and Warning manually.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to read the launch transaction.");
+      setNotice(error instanceof Error ? error.message : "Unable to read Robinhood Chain evidence.");
     } finally {
       setBusy("");
     }
   }
 
-  const verifyCounts = verifyRows.reduce(
-    (totals, row) => ({ ...totals, [row.status]: totals[row.status] + 1 }),
-    { confirmed: 0, warning: 0, unknown: 0, mismatch: 0 } as Record<CheckStatus, number>,
-  );
+  const verifyOverall = aggregateEvidenceStatus(verifyRows);
 
   return (
     <main>
@@ -980,10 +1066,10 @@ export default function Home() {
               </div>
 
               <div className="field-grid two">
-                <Field label="Token name" value={form.tokenName} onChange={(value) => update("tokenName", value)} />
-                <Field label="Ticker" value={form.tokenSymbol} onChange={(value) => update("tokenSymbol", value.toUpperCase())} hint="Use RCPNT if the full ticker is rejected." />
+                <Field label="Token name" value={form.tokenName} onChange={(value) => update("tokenName", value)} placeholder="e.g. Example Token" />
+                <Field label="Ticker" value={form.tokenSymbol} onChange={(value) => update("tokenSymbol", value.toUpperCase())} placeholder="e.g. TKN" hint="Use a short, unique ticker supported by the selected launchpad." />
               </div>
-              <Field label="Expected total supply" value={form.supply} onChange={(value) => update("supply", value.replace(/[^0-9,]/g, ""))} mono />
+              <Field label="Expected total supply" value={form.supply} onChange={(value) => update("supply", value.replace(/[^0-9,]/g, ""))} placeholder="e.g. 1000000000" mono />
               <div className="field-grid two">
                 <Field label="Fee beneficiary" value={form.beneficiary} onChange={(value) => update("beneficiary", value)} placeholder="0x…" mono />
                 <Field label="Treasury" value={form.treasury} onChange={(value) => update("treasury", value)} placeholder="0x…" mono />
@@ -992,10 +1078,10 @@ export default function Home() {
                 <Field label="Website" value={form.website} onChange={(value) => update("website", value)} placeholder="https://…" />
                 <Field label="X profile" value={form.xUrl} onChange={(value) => update("xUrl", value)} placeholder="https://x.com/…" />
               </div>
-              <Field label="Launchpad" value={form.launchpad} onChange={(value) => update("launchpad", value)} />
+              <Field label="Launchpad" value={form.launchpad} onChange={(value) => update("launchpad", value)} placeholder="Enter launchpad name or URL" />
 
               <label className="field transaction-field">
-                <span className="field-label">Prepared transaction JSON <span>optional until pools.trade is live</span></span>
+                <span className="field-label">Prepared transaction JSON <span>optional until the transaction is prepared</span></span>
                 <textarea
                   value={form.transactionJson}
                   onChange={(event) => update("transactionJson", event.target.value)}
@@ -1016,7 +1102,7 @@ export default function Home() {
             <aside className="result-panel">
               <div className="result-card">
                 <div className="receipt-top">
-                  <div><span className="receipt-kicker">RECIPEINT PREFLIGHT</span><strong>{form.tokenName || "UNTITLED"}</strong><small>${form.tokenSymbol || "—"} · {form.launchpad || "Launchpad not set"}</small></div>
+                  <div><span className="receipt-kicker">RECIPEINT PREFLIGHT</span><strong>{form.tokenName || "NO TOKEN PROVIDED"}</strong><small>{form.tokenSymbol ? `$${form.tokenSymbol}` : "Ticker not provided"} · {form.launchpad || "Launchpad not provided"}</small></div>
                   <div className="stamp">R<span>✓</span></div>
                 </div>
 
@@ -1046,7 +1132,7 @@ export default function Home() {
                 </div>
 
                 <div className="manifest-box">
-                  <div className="manifest-head"><span>Signed launch manifest</span>{signature ? <StatusPill status="confirmed" /> : <span className="unsigned">Unsigned</span>}</div>
+                  <div className="manifest-head"><span>Local launch manifest</span>{signature ? <span className="unsigned">Signature present</span> : <span className="unsigned">Unsigned</span>}</div>
                   {manifest ? (
                     <>
                       <button className="hash-row" onClick={() => copyText(manifest.manifestHash, "Manifest hash")}>
@@ -1072,15 +1158,15 @@ export default function Home() {
             <div className="verify-input-panel">
               <span className="section-index">02 / ONCHAIN MATCH</span>
               <h2>Verify what actually launched</h2>
-              <p>Read the launch directly from Robinhood Chain and compare it with the signed manifest saved on this device.</p>
-              <Field label="Launch transaction hash" value={txHash} onChange={setTxHash} placeholder="0x…" mono />
-              <Field label="Token contract" value={tokenAddress} onChange={setTokenAddress} placeholder="0x… (required for factory launches)" mono hint="Most launchpad receipts do not expose contractAddress directly." />
+              <p>Inspect a launch transaction, a token contract, or both. Token-only checks use latest state and cannot prove launch provenance.</p>
+              <Field label="Launch transaction hash (optional)" value={txHash} onChange={setTxHash} placeholder="0x…" mono />
+              <Field label="Token contract (optional)" value={tokenAddress} onChange={setTokenAddress} placeholder="0x…" mono hint="For factory launches, this enables inspection but does not prove which transaction created the token." />
               <button className="primary-action verify-action" onClick={verifyLaunch} disabled={busy === "verify"}>
                 <span>{busy === "verify" ? "Reading Robinhood Chain…" : "Verify launch"}</span><span>→</span>
               </button>
               <div className="saved-manifest-card">
                 <span>Local comparison manifest</span>
-                {manifest ? <><strong>{manifest.token.name} · ${manifest.token.symbol}</strong><small>{signature ? "Signed" : "Unsigned"} · {manifest.manifestHash.slice(0, 14)}…</small></> : <><strong>No manifest saved</strong><small>Transaction inspection will still work, but intended values remain Unknown.</small></>}
+                {manifest ? <><strong>{manifest.token.name} · ${manifest.token.symbol}</strong><small>{signature ? "Signature present · not recovery-validated" : "Unsigned"} · {manifest.manifestHash.slice(0, 14)}…</small></> : <><strong>No manifest saved</strong><small>Onchain inspection will still work, but intended values remain Unknown.</small></>}
               </div>
             </div>
 
@@ -1088,8 +1174,8 @@ export default function Home() {
               {verifyRows.length ? (
                 <>
                   <div className="verify-result-head">
-                    <div><span className="receipt-kicker">ONCHAIN RESULT</span><h3>{verifyCounts.mismatch ? "Launch mismatch" : verifyCounts.warning ? "Warnings found" : "Parameters match"}</h3><p>Block {verifyMeta.block} · {shortAddress(verifyMeta.from)} → {shortAddress(verifyMeta.to)}</p></div>
-                    <StatusPill status={verifyCounts.mismatch ? "mismatch" : verifyCounts.warning ? "warning" : "confirmed"} />
+                    <div><span className="receipt-kicker">ONCHAIN RESULT</span><h3>{verifyOverall.label}</h3><p>Evidence: {verifyMeta.block === "latest" ? "latest state" : `block ${verifyMeta.block}`}{verifyMeta.from || verifyMeta.to ? ` · ${shortAddress(verifyMeta.from)} → ${shortAddress(verifyMeta.to)}` : ""}</p></div>
+                    <StatusPill status={verifyOverall.status} />
                   </div>
                   <div className="verify-table">
                     {verifyRows.map((row) => (
@@ -1103,8 +1189,8 @@ export default function Home() {
               ) : (
                 <div className="verify-empty">
                   <div className="scan-grid" aria-hidden="true"><span /><span /><span /><span /><i /></div>
-                  <h3>No transaction loaded</h3>
-                  <p>Paste a Robinhood Chain launch transaction to inspect execution, token identity, supply, owner and standard proxy slots.</p>
+                  <h3>No evidence loaded</h3>
+                  <p>Paste a Robinhood Chain transaction hash or token address to inspect execution, token state and standard proxy patterns.</p>
                 </div>
               )}
             </div>
