@@ -89,9 +89,8 @@ test("keeps wallet actions limited to disclosure and verification", async () => 
   assert.match(page, /navigator\.clipboard\.writeText\(TOKEN_CONTRACT\)/);
   assert.match(links, /0x6245e67affa44a23077f0ea7f981a8dc743a0c47/);
   assert.match(links, /TOKEN_CONTRACT: string \| null = null/);
-  assert.match(links, /X_URL: string \| null = null/);
-  assert.match(links, /TELEGRAM_URL: string \| null = null/);
-  assert.doesNotMatch(links, /x\.com\/|t\.me\//);
+  assert.match(links, /X_URL: string \| null = "https:\/\/x\.com\/Recipeint"/);
+  assert.match(links, /TELEGRAM_URL: string \| null = "https:\/\/t\.me\/recipeint"/);
   assert.match(layout, /Signed Launch Preflight/);
   assert.match(layout, /\/brand\/recipeint-avatar\.png/);
   assert.match(layout, /prefers-color-scheme: light/);

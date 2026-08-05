@@ -9,8 +9,8 @@ export type ProjectLink = {
 
 export const FRONG_CONTRACT = "0x6245e67affa44a23077f0ea7f981a8dc743a0c47";
 export const TOKEN_CONTRACT: string | null = null;
-export const X_URL: string | null = null;
-export const TELEGRAM_URL: string | null = null;
+export const X_URL: string | null = "https://x.com/Recipeint";
+export const TELEGRAM_URL: string | null = "https://t.me/recipeint";
 
 const tokenExplorerUrl = TOKEN_CONTRACT
   ? `https://robinhoodchain.blockscout.com/token/${TOKEN_CONTRACT}`
