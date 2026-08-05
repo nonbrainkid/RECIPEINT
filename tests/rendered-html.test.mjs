@@ -37,8 +37,12 @@ test("prerenders the RECIPEINT launch preflight", async () => {
   assert.match(html, /No rewards are funded/i);
   assert.match(html, /Claim after launch/i);
   assert.match(html, /Toggle color theme/i);
-  assert.match(html, /Token contract available after launch/i);
-  assert.match(html, /CA: After launch/i);
+  assert.match(html, /Copy token contract/i);
+  assert.match(html, /CA:.*0x24Af.*e03c/i);
+  assert.match(
+    html,
+    /https:\/\/pools\.trade\/t\/0x24Af85cbA4045F9330DAD160CD02d4287310e03c/i,
+  );
   assert.match(html, />COPY</i);
   assert.match(html, /not a smart contract audit/i);
   assert.doesNotMatch(html, /react-loading-skeleton/i);
@@ -88,7 +92,14 @@ test("keeps wallet actions limited to disclosure and verification", async () => 
   assert.match(page, /may vary or be zero/);
   assert.match(page, /navigator\.clipboard\.writeText\(TOKEN_CONTRACT\)/);
   assert.match(links, /0x6245e67affa44a23077f0ea7f981a8dc743a0c47/);
-  assert.match(links, /TOKEN_CONTRACT: string \| null = null/);
+  assert.match(
+    links,
+    /TOKEN_CONTRACT: string \| null = "0x24Af85cbA4045F9330DAD160CD02d4287310e03c"/,
+  );
+  assert.match(
+    links,
+    /https:\/\/pools\.trade\/t\/0x24Af85cbA4045F9330DAD160CD02d4287310e03c/,
+  );
   assert.match(links, /X_URL: string \| null = "https:\/\/x\.com\/Recipeint"/);
   assert.match(links, /TELEGRAM_URL: string \| null = "https:\/\/t\.me\/recipeint"/);
   assert.match(layout, /Signed Launch Preflight/);

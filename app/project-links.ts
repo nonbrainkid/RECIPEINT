@@ -8,7 +8,9 @@ export type ProjectLink = {
 };
 
 export const FRONG_CONTRACT = "0x6245e67affa44a23077f0ea7f981a8dc743a0c47";
-export const TOKEN_CONTRACT: string | null = null;
+export const TOKEN_CONTRACT: string | null = "0x24Af85cbA4045F9330DAD160CD02d4287310e03c";
+export const TOKEN_TRADE_URL: string | null =
+  "https://pools.trade/t/0x24Af85cbA4045F9330DAD160CD02d4287310e03c";
 export const X_URL: string | null = "https://x.com/Recipeint";
 export const TELEGRAM_URL: string | null = "https://t.me/recipeint";
 
@@ -20,7 +22,7 @@ export const projectLinks = {
   token: {
     label: "Token contract",
     shortLabel: "Contract",
-    href: tokenExplorerUrl,
+    href: TOKEN_TRADE_URL || tokenExplorerUrl,
     status: TOKEN_CONTRACT ? "live" : "after-launch",
   },
   x: {
