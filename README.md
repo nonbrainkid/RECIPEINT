@@ -7,6 +7,12 @@ EIP-712 message signature, and compares the resulting transaction and deployed
 token fields with the saved manifest. It never submits a launch transaction,
 requests a token approval, or labels a token as safe.
 
+The interface also previews the declared 50/50 fee policy and a future FRONG
+Merkle-claim surface. The claim is intentionally disabled until rewards are
+funded and a snapshot block plus Merkle root are published. Token, X and
+Telegram links live in `app/project-links.ts`; unset links render as non-clickable
+launch states instead of placeholders.
+
 ## Run locally
 
 ```bash

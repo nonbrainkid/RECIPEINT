@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import {
+  FRONG_CONTRACT,
+  projectLinkList,
+  projectLinks,
+  projectLinkStatusLabel,
+} from "./project-links";
 
 declare global {
   interface Window {
@@ -793,6 +799,7 @@ export default function Home() {
         </a>
         <nav className="header-nav" aria-label="Primary navigation">
           <a href="#method">Method</a>
+          <a href="#distribution">50 / 50</a>
           <a href="https://blog.uniswap.org/uniswap-history" target="_blank" rel="noreferrer">
             Origin story ↗
           </a>
@@ -813,6 +820,22 @@ export default function Home() {
         <div className="hero-proof">
           <span className="proof-line" />
           <p><strong>RECIPEINT</strong> is the typo Vitalik caught before Uniswap launched. Now it catches launch mistakes.</p>
+        </div>
+        <div className="project-link-rail" aria-label="Official project links">
+          <span className="link-rail-label">Official links</span>
+          {projectLinkList.map((link) =>
+            link.href ? (
+              <a key={link.label} href={link.href} target="_blank" rel="noreferrer">
+                <span>{link.shortLabel}</span>
+                <strong>{projectLinkStatusLabel[link.status]} ↗</strong>
+              </a>
+            ) : (
+              <span key={link.label} className="project-link-disabled" aria-disabled="true">
+                <span>{link.shortLabel}</span>
+                <strong>{projectLinkStatusLabel[link.status]}</strong>
+              </span>
+            ),
+          )}
         </div>
       </section>
 
@@ -999,6 +1022,80 @@ export default function Home() {
 
       {notice ? <button className="toast" onClick={() => setNotice("")} aria-label="Dismiss notification"><span>{notice}</span><span>×</span></button> : null}
 
+      <section className="distribution-section" id="distribution" aria-labelledby="distribution-title">
+        <div className="distribution-intro">
+          <span className="section-index">DECLARED FEE ROUTE / PREVIEW</span>
+          <h2 id="distribution-title">Half to FRONG.<br /><em>Half to build.</em></h2>
+          <p>
+            A transparent allocation policy for creator and LP fees actually collected by the project.
+            No APY, yield, or payout is promised.
+          </p>
+        </div>
+
+        <div className="fee-split" aria-label="Planned fee allocation">
+          <article className="split-card community-card">
+            <div className="split-card-top">
+              <span className="split-number">50<span>%</span></span>
+              <span className="split-tag">FRONG COMMUNITY</span>
+            </div>
+            <h3>Periodic Merkle claims</h3>
+            <p>
+              50% of creator and LP fees actually collected are intended for periodic claims by
+              eligible FRONG holders, calculated from disclosed snapshot data.
+            </p>
+            <a className="contract-link" href={projectLinks.frong.href ?? undefined} target="_blank" rel="noreferrer">
+              <span>Eligibility token</span>
+              <code>{FRONG_CONTRACT}</code>
+              <strong>Blockscout ↗</strong>
+            </a>
+          </article>
+
+          <article className="split-card build-card">
+            <div className="split-card-top">
+              <span className="split-number">50<span>%</span></span>
+              <span className="split-tag">BUILD TREASURY</span>
+            </div>
+            <h3>Public project development</h3>
+            <p>
+              50% are intended for product and security, team compensation, disclosed marketing,
+              listings and Dexscreener, token burns, and other strategic project spending.
+            </p>
+            <ul className="treasury-uses" aria-label="Planned treasury uses">
+              <li>Product + security</li>
+              <li>Team</li>
+              <li>Marketing + listings</li>
+              <li>Burns + strategy</li>
+            </ul>
+          </article>
+        </div>
+
+        <aside className="claim-preview" aria-labelledby="claim-title">
+          <div className="claim-status-column">
+            <span className="live-status"><i aria-hidden="true" /> Not live</span>
+            <span className="claim-sequence">DISTRIBUTION / 000</span>
+          </div>
+          <div className="claim-copy">
+            <span className="section-index">COMMUNITY CLAIM</span>
+            <h3 id="claim-title">Claim surface preview</h3>
+            <p>No rewards are funded and no snapshot has been published. This panel will activate only after a verifiable distribution root is live.</p>
+          </div>
+          <dl className="claim-metrics">
+            <div><dt>Rewards funded</dt><dd>0</dd></div>
+            <div><dt>Snapshot</dt><dd>Not published</dd></div>
+            <div><dt>Merkle root</dt><dd>Not published</dd></div>
+          </dl>
+          <button className="claim-button" type="button" disabled>
+            <span>Claim after launch</span><span aria-hidden="true">—</span>
+          </button>
+        </aside>
+
+        <p className="distribution-disclaimer">
+          Amounts depend on fees actually collected and may vary or be zero. Eligibility rules,
+          snapshot blocks, Merkle roots, treasury addresses, and transactions should be published
+          before each distribution.
+        </p>
+      </section>
+
       <section className="method-section" id="method">
         <div className="method-intro"><span className="section-index">HOW IT WORKS</span><h2>One launch.<br />Three sources of truth.</h2><p>RECIPEINT does not invent a score. It preserves intent, inspects execution and points to the exact evidence.</p></div>
         <div className="method-steps">
@@ -1016,7 +1113,15 @@ export default function Home() {
       <footer>
         <div className="brand footer-brand"><span className="brand-mark">R</span><span className="brand-word">RECIP<span>EI</span>NT</span></div>
         <p>Independent creator-side preflight infrastructure. No affiliation with Uniswap Labs, pools.trade, Robinhood or Vitalik Buterin.</p>
-        <div><a href="https://docs.robinhood.com/chain/connecting/" target="_blank" rel="noreferrer">Robinhood Chain docs ↗</a><a href="https://blog.uniswap.org/uniswap-history" target="_blank" rel="noreferrer">Historical source ↗</a></div>
+        <div className="footer-links">
+          {projectLinkList.map((link) =>
+            link.href ? (
+              <a key={link.label} href={link.href} target="_blank" rel="noreferrer">{link.shortLabel} ↗</a>
+            ) : (
+              <span key={link.label} aria-disabled="true">{link.shortLabel} · {projectLinkStatusLabel[link.status]}</span>
+            ),
+          )}
+        </div>
       </footer>
     </main>
   );

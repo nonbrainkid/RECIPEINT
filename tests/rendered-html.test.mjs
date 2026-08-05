@@ -31,9 +31,10 @@ test("server-renders the RECIPEINT launch preflight", async () => {
 });
 
 test("keeps wallet actions limited to disclosure and verification", async () => {
-  const [page, layout, packageJson] = await Promise.all([
+  const [page, layout, links, packageJson] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
+    readFile(new URL("app/project-links.ts", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
 
@@ -42,6 +43,12 @@ test("keeps wallet actions limited to disclosure and verification", async () => 
   assert.match(page, /eth_getStorageAt/);
   assert.match(page, /recipeint\.launch-manifest\/0\.1/);
   assert.doesNotMatch(page, /eth_sendTransaction|wallet_sendCalls|permit\(/);
+  assert.match(page, /No rewards are funded/);
+  assert.match(page, /<button className="claim-button" type="button" disabled>/);
+  assert.match(page, /may vary or be zero/);
+  assert.match(links, /0x6245e67affa44a23077f0ea7f981a8dc743a0c47/);
+  assert.match(links, /href: null,[\s\S]*status: "after-launch"/);
+  assert.doesNotMatch(links, /x\.com\/|t\.me\//);
   assert.match(layout, /Signed Launch Preflight/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
