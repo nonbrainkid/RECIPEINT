@@ -44,3 +44,4 @@ next-env.d.ts
 /.dev-out.log
 /.dev-err.log
 /.sites-build.tar.gz
+/.openai/
