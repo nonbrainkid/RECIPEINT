@@ -11,6 +11,8 @@
   --orange: #ff8b42;
   --red: #ff5f57;
   --blue: #597cff;
+  --font-geist-sans: Inter, "SF Pro Display", "Segoe UI", Arial, sans-serif;
+  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --mono: var(--font-geist-mono), "SFMono-Regular", Consolas, monospace;
 }
 

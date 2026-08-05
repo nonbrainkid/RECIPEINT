@@ -5,23 +5,11 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  return readFile(new URL(".next/server/app/index.html", root), "utf8");
 }
 
-test("server-renders the RECIPEINT launch preflight", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
-  const html = await response.text();
+test("prerenders the RECIPEINT launch preflight", async () => {
+  const html = await render();
   assert.match(html, /RECIPEINT/);
   assert.match(html, /Catch the mismatch before the signature/i);
   assert.match(html, /Generate launch manifest/i);
@@ -50,5 +38,7 @@ test("keeps wallet actions limited to disclosure and verification", async () => 
   assert.match(links, /href: null,[\s\S]*status: "after-launch"/);
   assert.doesNotMatch(links, /x\.com\/|t\.me\//);
   assert.match(layout, /Signed Launch Preflight/);
+  assert.match(packageJson, /"build": "next build"/);
+  assert.doesNotMatch(packageJson, /vinext|cloudflare|vite/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
