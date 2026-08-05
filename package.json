@@ -10,20 +10,25 @@
     "build": "next build",
     "start": "next start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "brand:avatar": "remotion still remotion/index.ts RecipeintAvatar public/brand/recipeint-avatar.png --overwrite",
+    "brand:banner": "remotion still remotion/index.ts RecipeintXBanner public/brand/recipeint-x-banner.png --overwrite",
+    "brand:render": "npm run brand:avatar && npm run brand:banner"
   },
   "dependencies": {
-    "next": "16.2.6",
+    "next": "16.3.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
+    "@remotion/cli": "4.0.506",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.0",
+    "remotion": "4.0.506",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },

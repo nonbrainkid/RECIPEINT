@@ -8,25 +8,32 @@ export type ProjectLink = {
 };
 
 export const FRONG_CONTRACT = "0x6245e67affa44a23077f0ea7f981a8dc743a0c47";
+export const TOKEN_CONTRACT: string | null = null;
+export const X_URL: string | null = null;
+export const TELEGRAM_URL: string | null = null;
+
+const tokenExplorerUrl = TOKEN_CONTRACT
+  ? `https://robinhoodchain.blockscout.com/token/${TOKEN_CONTRACT}`
+  : null;
 
 export const projectLinks = {
   token: {
     label: "Token contract",
     shortLabel: "Contract",
-    href: null,
-    status: "after-launch",
+    href: tokenExplorerUrl,
+    status: TOKEN_CONTRACT ? "live" : "after-launch",
   },
   x: {
     label: "X / Twitter",
     shortLabel: "X",
-    href: null,
-    status: "coming-soon",
+    href: X_URL,
+    status: X_URL ? "live" : "coming-soon",
   },
   telegram: {
     label: "Telegram",
     shortLabel: "Telegram",
-    href: null,
-    status: "coming-soon",
+    href: TELEGRAM_URL,
+    status: TELEGRAM_URL ? "live" : "coming-soon",
   },
   frong: {
     label: "FRONG contract",

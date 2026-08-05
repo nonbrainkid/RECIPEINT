@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   FRONG_CONTRACT,
+  TOKEN_CONTRACT,
   projectLinkList,
   projectLinks,
   projectLinkStatusLabel,
@@ -450,6 +451,22 @@ export default function Home() {
     }
   }
 
+  function toggleTheme() {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    window.localStorage.setItem("recipeint:theme", next);
+  }
+
+  async function copyTokenContract() {
+    if (!TOKEN_CONTRACT) return;
+    try {
+      await navigator.clipboard.writeText(TOKEN_CONTRACT);
+      setNotice("Token contract copied.");
+    } catch {
+      setNotice("Clipboard access was blocked. Copy the contract from Blockscout.");
+    }
+  }
+
   async function switchNetwork() {
     if (!window.ethereum) return connectWallet();
     setBusy("network");
@@ -804,10 +821,40 @@ export default function Home() {
             Origin story ↗
           </a>
         </nav>
-        <button className="wallet-button" onClick={connectWallet} disabled={busy === "connect"}>
-          <span className={account ? "wallet-dot connected" : "wallet-dot"} />
-          {account ? shortAddress(account) : busy === "connect" ? "Connecting…" : "Connect wallet"}
-        </button>
+        <div className="header-actions">
+          <div className="header-socials" aria-label="Project and display controls">
+            {[projectLinks.x, projectLinks.telegram].map((link) =>
+              link.href ? (
+                <a key={link.label} href={link.href} target="_blank" rel="noreferrer" aria-label={`Open ${link.label}`}>
+                  {link.shortLabel === "Telegram" ? "TG" : link.shortLabel}
+                </a>
+              ) : (
+                <button key={link.label} type="button" disabled aria-label={`${link.label} coming soon`} title="Coming soon">
+                  {link.shortLabel === "Telegram" ? "TG" : link.shortLabel}
+                </button>
+              ),
+            )}
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={toggleTheme}
+              aria-label="Toggle color theme"
+              title="Toggle color theme"
+            >
+              <span className="theme-icon-dark" aria-hidden="true">☀</span>
+              <span className="theme-icon-light" aria-hidden="true">☾</span>
+            </button>
+          </div>
+          <button
+            className="wallet-button"
+            onClick={connectWallet}
+            disabled={busy === "connect"}
+            aria-label={account ? `Connected wallet ${shortAddress(account)}` : busy === "connect" ? "Connecting wallet" : "Connect wallet"}
+          >
+            <span className={account ? "wallet-dot connected" : "wallet-dot"} />
+            <span className="wallet-label">{account ? shortAddress(account) : busy === "connect" ? "Connecting…" : "Connect wallet"}</span>
+          </button>
+        </div>
       </header>
 
       <section className="hero" id="top">
@@ -823,8 +870,35 @@ export default function Home() {
         </div>
         <div className="project-link-rail" aria-label="Official project links">
           <span className="link-rail-label">Official links</span>
-          {projectLinkList.map((link) =>
-            link.href ? (
+          {projectLinkList.map((link) => {
+            if (link === projectLinks.token) {
+              return (
+                <div key={link.label} className="project-contract-control">
+                  {link.href ? (
+                    <a href={link.href} target="_blank" rel="noreferrer">
+                      <span>{link.shortLabel}</span>
+                      <strong>CA: {TOKEN_CONTRACT ? shortAddress(TOKEN_CONTRACT) : "After launch"} ↗</strong>
+                    </a>
+                  ) : (
+                    <span className="project-contract-pending" aria-disabled="true">
+                      <span>{link.shortLabel}</span>
+                      <strong>CA: After launch</strong>
+                    </span>
+                  )}
+                  <button
+                    className="ca-copy"
+                    type="button"
+                    onClick={copyTokenContract}
+                    disabled={!TOKEN_CONTRACT}
+                    aria-label={TOKEN_CONTRACT ? "Copy token contract" : "Token contract available after launch"}
+                    title={TOKEN_CONTRACT ? "Copy contract address" : "After launch"}
+                  >
+                    COPY
+                  </button>
+                </div>
+              );
+            }
+            return link.href ? (
               <a key={link.label} href={link.href} target="_blank" rel="noreferrer">
                 <span>{link.shortLabel}</span>
                 <strong>{projectLinkStatusLabel[link.status]} ↗</strong>
@@ -834,8 +908,8 @@ export default function Home() {
                 <span>{link.shortLabel}</span>
                 <strong>{projectLinkStatusLabel[link.status]}</strong>
               </span>
-            ),
-          )}
+            );
+          })}
         </div>
       </section>
 
